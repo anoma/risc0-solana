@@ -277,44 +277,111 @@ fn subtract_be_bytes(a: &mut [u8; 32], b: &[u8; 32]) {
 }
 
 #[cfg(test)]
-mod v3_test_receipt;
+mod v3_0_test_receipt;
+
+#[cfg(test)]
+mod v3_1_test_receipt;
 
 #[cfg(test)]
 mod test_groth16_lib {
 
     use super::client::*;
     use super::*;
-    use risc0_zkvm::sha::Digestible;
-    use risc0_zkvm::Receipt;
-    use v3_test_receipt::{FIB_ID as IMG_ID, FIB_RECEIPT as RECEIPT};
+    use risc0_zkvm::sha::{Digest, Digestible, Impl, Sha256};
+    use risc0_zkvm::{Groth16ReceiptVerifierParameters, Receipt, ReceiptClaim};
+    use v3_1_test_receipt::{IMAGE_ID, JOURNAL, SEAL};
 
     // Reference base field modulus for BN254
     // https://docs.rs/ark-bn254/latest/ark_bn254/
     const REF_BASE_FIELD_MODULUS: &str =
         "21888242871839275222246405745257275088696311157297823662689037894645226208583";
 
-    fn load_receipt_and_extract_data() -> (Receipt, Proof, PublicInputs<5>) {
-        let receipt: Receipt = bincode::deserialize(RECEIPT).unwrap();
+    // risc0-ethereum's `Selector::Groth16V3_1`.
+    const GROTH16_V3_1_SELECTOR: [u8; 4] = hex!("e71e6620");
 
-        let claim_digest = receipt
-            .inner
-            .groth16()
-            .unwrap()
-            .claim
-            .digest()
-            .try_into()
-            .unwrap();
-        let public_inputs = public_inputs(claim_digest).unwrap();
-
-        let proof_raw = &receipt.inner.groth16().unwrap().seal;
+    fn proof_from_seal(seal: &[u8]) -> Proof {
         let mut proof = Proof {
-            pi_a: proof_raw[0..64].try_into().unwrap(),
-            pi_b: proof_raw[64..192].try_into().unwrap(),
-            pi_c: proof_raw[192..256].try_into().unwrap(),
+            pi_a: seal[0..64].try_into().unwrap(),
+            pi_b: seal[64..192].try_into().unwrap(),
+            pi_c: seal[192..256].try_into().unwrap(),
         };
         proof.pi_a = negate_g1(&proof.pi_a);
+        proof
+    }
 
-        (receipt, proof, public_inputs)
+    fn journal_digest() -> [u8; 32] {
+        Impl::hash_bytes(JOURNAL).as_bytes().try_into().unwrap()
+    }
+
+    /// The proof and public inputs of the risc0-zkvm 3.1.0 receipt; its seal starts with the selector.
+    fn load_v3_1_proof_and_inputs() -> (Proof, PublicInputs<5>) {
+        assert_eq!(
+            SEAL[..4],
+            GROTH16_V3_1_SELECTOR,
+            "test receipt is not a 3.1.0 seal"
+        );
+        let proof = proof_from_seal(&SEAL[4..]);
+        let public_inputs = public_inputs(hash_claim(&IMAGE_ID, &journal_digest())).unwrap();
+        (proof, public_inputs)
+    }
+
+    #[test]
+    fn verifier_parameters_are_risc0_zkvm_3_1_defaults() {
+        let vk = VERIFICATION_KEY;
+        let ic: Vec<Vec<String>> = vk.vk_ic.iter().map(export_g1).collect();
+        let vk_json = serde_json::json!({
+            "protocol": "groth16",
+            "curve": "bn128",
+            "nPublic": vk.nr_pubinputs,
+            "vk_alpha_1": export_g1(&vk.vk_alpha_g1),
+            "vk_beta_2": export_g2(&vk.vk_beta_g2),
+            "vk_gamma_2": export_g2(&vk.vk_gamma_g2),
+            "vk_delta_2": export_g2(&vk.vk_delta_g2),
+            "vk_alphabeta_12": [],
+            "IC": ic,
+        });
+        let verifying_key = serde_json::from_value::<risc0_groth16::VerifyingKeyJson>(vk_json)
+            .unwrap()
+            .verifying_key()
+            .unwrap();
+        let program_params = Groth16ReceiptVerifierParameters {
+            control_root: Digest::from(ALLOWED_CONTROL_ROOT),
+            bn254_control_id: Digest::from(BN254_IDENTITY_CONTROL_ID),
+            verifying_key,
+        };
+        let default_params = Groth16ReceiptVerifierParameters::default();
+
+        assert_eq!(
+            program_params.digest(),
+            default_params.digest(),
+            "the program's verifying key and control IDs are not risc0-zkvm's"
+        );
+        assert_eq!(
+            default_params.digest().as_bytes()[..4],
+            GROTH16_V3_1_SELECTOR,
+            "risc0-zkvm's default verifier parameters are not those of 3.1.0"
+        );
+    }
+
+    #[test]
+    fn verify_accepts_risc0_3_1_receipt() {
+        let (proof, public_inputs) = load_v3_1_proof_and_inputs();
+        verify_groth16(&proof, &public_inputs).expect("the 3.1.0 receipt does not verify");
+    }
+
+    #[test]
+    fn verify_rejects_risc0_3_0_receipt() {
+        let receipt: Receipt = bincode::deserialize(v3_0_test_receipt::FIB_RECEIPT).unwrap();
+        let groth16 = receipt.inner.groth16().unwrap();
+        let claim_digest = groth16.claim.digest().as_bytes().try_into().unwrap();
+        let res = verify_groth16(
+            &proof_from_seal(&groth16.seal),
+            &public_inputs(claim_digest).unwrap(),
+        );
+        assert!(
+            res.is_err(),
+            "a receipt of the 3.0 circuits verifies against the 3.1.0 key"
+        );
     }
 
     #[test]
@@ -359,21 +426,11 @@ mod test_groth16_lib {
 
     #[test]
     fn test_proof() {
-        let (_, proof, _) = load_receipt_and_extract_data();
+        let (proof, _) = load_v3_1_proof_and_inputs();
         // Convert to bytes
         let proof_bytes = proof.to_bytes();
         // Check that we have 256 bytes
         assert_eq!(proof_bytes.len(), 256);
-    }
-
-    #[test]
-    pub fn test_verify() {
-        let (receipt, proof, public_inputs) = load_receipt_and_extract_data();
-        receipt
-            .verify(IMG_ID)
-            .expect("sanity check verification of receipt failed");
-        let res = verify_groth16(&proof, &public_inputs);
-        assert!(res.is_ok(), "Contract verification failed");
     }
 
     #[test]
@@ -398,18 +455,9 @@ mod test_groth16_lib {
 
     #[test]
     fn test_claim_digest() {
-        let (receipt, _, _) = load_receipt_and_extract_data();
-        let actual_claim_digest = receipt.claim().unwrap().digest();
-
-        let mut image_id = [0u8; 32];
-        for (i, &val) in IMG_ID.iter().enumerate() {
-            let bytes = val.to_le_bytes();
-            image_id[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
-        }
-        let calculated_claim_digest: [u8; 32] = hash_claim(
-            &image_id,
-            <&[u8; 32]>::try_from(receipt.journal.digest().as_bytes()).unwrap(),
-        );
+        let actual_claim_digest =
+            ReceiptClaim::ok(Digest::from(IMAGE_ID), JOURNAL.to_vec()).digest();
+        let calculated_claim_digest: [u8; 32] = hash_claim(&IMAGE_ID, &journal_digest());
         assert_eq!(
             actual_claim_digest.as_bytes(),
             calculated_claim_digest,
@@ -419,7 +467,7 @@ mod test_groth16_lib {
 
     #[test]
     fn test_verify_invalid_proof() {
-        let (_, mut proof, public_inputs) = load_receipt_and_extract_data();
+        let (mut proof, public_inputs) = load_v3_1_proof_and_inputs();
         // Corrupt proof
         proof.pi_a[0] ^= 1;
         let res = verify_groth16(&proof, &public_inputs);
@@ -428,7 +476,7 @@ mod test_groth16_lib {
 
     #[test]
     fn test_verify_invalid_public_inputs() {
-        let (_, proof, mut public_inputs) = load_receipt_and_extract_data();
+        let (proof, mut public_inputs) = load_v3_1_proof_and_inputs();
         // Corrupt input
         public_inputs.inputs[0][0] ^= 1;
         let res = verify_groth16(&proof, &public_inputs);
