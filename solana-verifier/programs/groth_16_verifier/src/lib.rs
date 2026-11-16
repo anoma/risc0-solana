@@ -29,7 +29,7 @@ pub mod client;
 
 pub use vk::{VerificationKey, VERIFICATION_KEY};
 
-declare_id!("THq1qFYQoh7zgcjXoMXduDBqiZRCPeg3PvvMbrVQUge");
+declare_id!("5RrWAZFxm9biQ1PxD6azhevG2popHEC3gDJnZ4YoK1Ba");
 
 include!(concat!(env!("OUT_DIR"), "/control_ids.rs"));
 
