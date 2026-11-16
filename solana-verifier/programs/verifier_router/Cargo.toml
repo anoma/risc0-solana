@@ -22,7 +22,7 @@ client = ["dep:risc0-zkvm"]
 anchor-lang = "0.31.1"
 ownable = { path = "../../../solana-ownable/ownable"}
 groth_16_verifier = { path = "../groth_16_verifier", features = ["cpi"] }
-risc0-zkvm = { version = "3.0.3", default-features = false, optional = true }
+risc0-zkvm = { version = "3.1.0", default-features = false, optional = true }
 
 [dev-dependencies]
-risc0-zkvm = { version = "3.0.3", default-features = false }
+risc0-zkvm = { version = "3.1.0", default-features = false }

@@ -81,13 +81,13 @@ impl Proof {
     }
 }
 
-fn export_g1(bytes: &[u8; G1_LEN]) -> Vec<String> {
+pub(crate) fn export_g1(bytes: &[u8; G1_LEN]) -> Vec<String> {
     let x = BigUint::from_bytes_be(&bytes[..32]);
     let y = BigUint::from_bytes_be(&bytes[32..]);
     vec![x.to_string(), y.to_string(), "1".to_string()]
 }
 
-fn export_g2(bytes: &[u8; G2_LEN]) -> Vec<Vec<String>> {
+pub(crate) fn export_g2(bytes: &[u8; G2_LEN]) -> Vec<Vec<String>> {
     let x_c1 = BigUint::from_bytes_be(&bytes[..32]);
     let x_c0 = BigUint::from_bytes_be(&bytes[32..64]);
     let y_c1 = BigUint::from_bytes_be(&bytes[64..96]);
